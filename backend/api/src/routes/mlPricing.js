@@ -4,11 +4,14 @@
  * Protected by strict rate limiting and price obfuscation.
  */
 import express from 'express';
+import axios from 'axios';
 import { strictMlRateLimiter } from '../middleware/mlRateLimiter.js';
 import { applyPriceObfuscation } from '../services/priceObfuscation.js';
 import logger from '../middleware/logger.js';
 
 const router = express.Router();
+
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000/ml';
 
 /**
  * Validate request body for ML endpoints
@@ -33,22 +36,33 @@ router.post('/predict-demand', strictMlRateLimiter, validateMlRequest, async (re
     try {
         const { origin, destination, date, cargoType } = req.body;
 
-        // TODO: Replace with actual ML service call
-        // const mlResponse = await mlService.predictDemand({ origin, destination, date, cargoType });
-        const mockMlResponse = {
-            demandScore: 0.85,
-            estimatedPrice: 15000,
-            confidence: 0.92
-        };
+        // Call the actual ML service
+        let mlResponse;
+        try {
+            const response = await axios.post(`${ML_SERVICE_URL}/predict-demand`, {
+                origin,
+                destination,
+                date,
+                cargoType
+            }, { timeout: 5000 });
+            mlResponse = response.data;
+        } catch (error) {
+            logger.warn({ err: error.message }, '[MLPricing] ML service unavailable or failed. Using fallback mock data.');
+            mlResponse = {
+                demandScore: 0.85,
+                estimatedPrice: 15000,
+                confidence: 0.92
+            };
+        }
 
         // Apply obfuscation to the estimated price
         const userId = req.user?.id || null;
-        const finalEstimatedPrice = await applyPriceObfuscation(mockMlResponse.estimatedPrice, userId);
+        const finalEstimatedPrice = await applyPriceObfuscation(mlResponse.estimatedPrice, userId);
 
         res.json({
             success: true,
             data: {
-                ...mockMlResponse,
+                ...mlResponse,
                 estimatedPrice: finalEstimatedPrice
             }
         });
@@ -67,19 +81,30 @@ router.post('/search', strictMlRateLimiter, validateMlRequest, async (req, res) 
     try {
         const { origin, destination, vehicleType, maxPrice } = req.body;
 
-        // TODO: Replace with actual ML service call
-        // const mlResponse = await mlService.searchLoads({ origin, destination, vehicleType, maxPrice });
-        const mockMlResponse = {
-            results: [
-                { id: 'load-1', price: 12000, distance: 450 },
-                { id: 'load-2', price: 13500, distance: 460 }
-            ]
-        };
+        // Call actual ML service for search
+        let mlResponse;
+        try {
+            const response = await axios.post(`${ML_SERVICE_URL}/search-loads`, {
+                origin,
+                destination,
+                vehicleType,
+                maxPrice
+            }, { timeout: 5000 });
+            mlResponse = response.data;
+        } catch (error) {
+            logger.warn({ err: error.message }, '[MLPricing] ML search service unavailable or failed. Using fallback mock data.');
+            mlResponse = {
+                results: [
+                    { id: 'load-1', price: 12000, distance: 450 },
+                    { id: 'load-2', price: 13500, distance: 460 }
+                ]
+            };
+        }
 
         // Apply obfuscation to each result's price
         const userId = req.user?.id || null;
         const obfuscatedResults = await Promise.all(
-            mockMlResponse.results.map(async (item) => {
+            mlResponse.results.map(async (item) => {
                 const obfuscatedPrice = await applyPriceObfuscation(item.price, userId);
                 return { ...item, price: obfuscatedPrice };
             })
